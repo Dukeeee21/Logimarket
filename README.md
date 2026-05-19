@@ -16,19 +16,24 @@ Está compuesto por tres aplicaciones que se usan en un orden específico.
 
 ---
 
-## 1. VendiaUpdater — Levantar el servidor (solo en el servidor central)
+## 1. VendiaUpdater — Levantar el daemon (solo en el servidor central)
 
 Esta app debe estar corriendo **antes** de que cualquier sede intente enviar ventas.
-Es una aplicación de consola que queda escuchando en segundo plano.
+Es una aplicación de consola que queda vigilando una carpeta compartida en segundo plano.
 
-**Requisito previo — crear la base de datos en MySQL una sola vez:**
-```sql
-CREATE DATABASE logimarket;
-```
+**Requisitos previos:**
 
-**Configurar credenciales** en `VendiaUpdater/updater.properties`:
+1. Crear la base de datos en MySQL una sola vez:
+   ```sql
+   CREATE DATABASE logimarket;
+   ```
+2. Crear la carpeta compartida que actuará como buzón de mensajes,
+   por ejemplo `C:\Users\USER\Desktop\DATOS`.
+
+**Configurar credenciales y ruta** en `VendiaUpdater/updater.properties`:
 ```properties
-puerto=9090
+carpeta.datos=C:\\Users\\USER\\Desktop\\DATOS
+intervalo.polling.ms=2000
 db.url=jdbc:mysql://localhost:3306/logimarket
 db.usuario=root
 db.password=tu_password
@@ -43,14 +48,18 @@ mvn compile exec:java
 Verás en consola:
 ```
   VendiaUpdater — LogiMarket Peru S.A.
-  Puerto TCP  : 9090
-  BD URL      : jdbc:mysql://localhost:3306/logimarket
+  Carpeta DATOS : C:\Users\USER\Desktop\DATOS
+  Polling (ms)  : 2000
+  BD URL        : jdbc:mysql://localhost:3306/logimarket
   ...
-Servidor activo. Presione ENTER para detener.
+Daemon activo. Presione ENTER para detener.
 ```
 
-El servidor queda esperando conexiones. La tabla `ventas` se crea automáticamente
-en MySQL si no existe. Para detenerlo, presionar **ENTER**.
+El daemon revisa la carpeta cada `intervalo.polling.ms` milisegundos buscando
+archivos `.dat` nuevos. Por cada uno los inserta en MySQL (batch insert) y escribe
+un archivo `.ack` con el mismo nombre base para confirmar al cliente.
+La tabla `ventas` se crea automáticamente en MySQL si no existe.
+Para detenerlo, presionar **ENTER**.
 
 ---
 
@@ -82,7 +91,7 @@ mvn javafx:run
 ## 3. VendiaSender — Enviar ventas al servidor (al cerrar el turno)
 
 Al terminar el turno, el cajero abre esta app para enviar todas las ventas
-pendientes al servidor central.
+pendientes al servidor central depositando un archivo en la carpeta compartida.
 
 **Ejecutar:**
 ```bash
@@ -92,24 +101,27 @@ mvn javafx:run
 
 **Pasos dentro de la app:**
 
-1. **Seleccionar el archivo** → botón "Examinar..." → buscar `ventas.dat`
+1. **Seleccionar el archivo de ventas** → botón "Examinar..." → buscar `ventas.dat`
    (se encuentra en la carpeta `VendiaApp/`)
-2. **Ingresar los datos del servidor:**
-   - Dirección IP del servidor donde corre VendiaUpdater
-   - Puerto (por defecto `9090`)
+2. **Seleccionar la carpeta compartida** → botón "Examinar carpeta..." → elegir
+   la misma carpeta `DATOS\` configurada en VendiaUpdater
 3. **Hacer clic en "Enviar al Servidor"**
 
 Si todo va bien, verás en el log:
 ```
-Conexion establecida. Enviando 5 registro(s)...
-  Enviado: VTA-20260516-143022  |  S/. 150.00
-  Enviado: VTA-20260516-151030  |  S/. 89.50
-  ...
-ACK recibido. Envio completado exitosamente.
+Escribiendo 5 registro(s) en ventas_20260518_143022.dat...
+Archivo enviado. Esperando confirmacion del servidor...
+ACK recibido: ventas_20260518_143022.ack
+Envio confirmado: OK 5
+Ventas marcadas como enviadas (estado=E) en ventas.dat.
 ```
 
-Las ventas enviadas cambian automáticamente a estado **E** (Enviada) en `ventas.dat`.
-Si se ejecuta dos veces por error, el servidor las ignora sin duplicarlas.
+Internamente VendiaSender escribe un archivo `ventas_<timestamp>.dat` en la carpeta
+compartida y se queda haciendo polling hasta que VendiaUpdater deja un
+`ventas_<timestamp>.ack` con la respuesta (timeout 30 s). Tras recibir un `OK`
+las ventas cambian a estado **E** (Enviada) en `ventas.dat`.
+Si se ejecuta dos veces por error, el servidor las ignora sin duplicarlas
+gracias al `INSERT IGNORE` por clave primaria.
 
 ---
 
@@ -125,5 +137,5 @@ Si se ejecuta dos veces por error, el servidor las ignora sin duplicarlas.
 
 ## Más información
 
-Para detalles técnicos sobre el protocolo TCP, el formato binario de los archivos
-y el esquema de la base de datos, ver [`SISTEMA.md`](SISTEMA.md).
+Para detalles técnicos sobre el protocolo de carpeta compartida, el formato binario
+de los archivos y el esquema de la base de datos, ver [`SISTEMA.md`](SISTEMA.md).

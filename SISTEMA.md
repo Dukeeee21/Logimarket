@@ -16,15 +16,18 @@ para registrar ventas en cada sede y consolidarlas en un servidor central.
 │     Registra ventas localmente          │
 │                                         │
 │  2. VendiaSender  (al cerrar turno)     │
-│     Lee ventas.dat y envía por TCP      │
+│     Copia ventas pendientes a DATOS\    │
 └──────────────────┬──────────────────────┘
-                   │  TCP (puerto 9090)
+                   │  Carpeta compartida DATOS\
+                   │  ventas_<ts>.dat  →
+                   │  ventas_<ts>.ack  ←
                    ▼
 ┌─────────────────────────────────────────┐
 │           SERVIDOR CENTRAL              │
 │                                         │
 │  3. VendiaUpdater  (daemon)             │
-│     Recibe datos → INSERT en MySQL      │
+│     Vigila DATOS\ → INSERT en MySQL     │
+│     → escribe .ack                      │
 └─────────────────────────────────────────┘
 ```
 
@@ -44,15 +47,18 @@ Aplicación de escritorio (JavaFX) que el cajero usa durante su turno.
 Aplicación de escritorio (JavaFX) que se ejecuta **al cerrar el turno**.
 
 - Lee las ventas con estado `P` de `ventas.dat`
-- Las envía al servidor central por TCP
-- Al recibir el `ACK`, marca cada venta como `E` (Enviada) en `ventas.dat`
+- Las escribe a un archivo `ventas_<timestamp>.dat` en la carpeta compartida `DATOS\`
+- Se queda haciendo polling esperando que aparezca `ventas_<timestamp>.ack`
+  (timeout 30 s)
+- Si el `.ack` dice `OK`, marca cada venta como `E` (Enviada) en `ventas.dat`
 
 ### 3. VendiaUpdater — Receptor (daemon)
 Aplicación de consola que corre permanentemente en el servidor central.
 
-- Escucha conexiones TCP en un puerto configurado
-- Recibe los registros binarios y los inserta en MySQL
-- Responde `ACK` al cliente para confirmar la recepción
+- Vigila la carpeta compartida `DATOS\` cada N milisegundos (polling configurable)
+- Por cada archivo `.dat` que no tenga su `.ack` asociado, lee los registros
+  binarios y los inserta en MySQL usando **batch insert** transaccional
+- Escribe un archivo `.ack` con el mismo nombre base para confirmar al cliente
 - Crea la tabla `ventas` automáticamente si no existe
 
 ---
@@ -73,24 +79,28 @@ Al cerrar turno: cajero abre VendiaSender
         │
         ▼
 VendiaSender lee ventas.dat → filtra estado = 'P'
-Abre socket TCP hacia el servidor
-        │
-        ├─ Envía: int (cantidad de registros)
-        ├─ Envía: N registros de 130 bytes c/u
+Genera un timestamp y escribe DATOS\ventas_<ts>.dat
+con los N registros de 130 bytes c/u
         │
         ▼
-VendiaUpdater recibe la conexión
+VendiaSender se queda esperando DATOS\ventas_<ts>.ack
+(polling cada 500 ms, timeout 30 s)
         │
-        ├─ Lee int → sabe cuántos registros esperar
+        ▼
+VendiaUpdater (loop infinito cada 2 s) detecta el .dat nuevo
+        │
+        ├─ Verifica que no exista ya su .ack (idempotencia)
         ├─ Lee cada registro de 130 bytes
-        ├─ INSERT en MySQL (INSERT IGNORE si ya existe)
-        ├─ Envía: "ACK"
+        ├─ INSERT batch en MySQL (INSERT IGNORE si ya existe)
+        ├─ Escribe DATOS\ventas_<ts>.ack con "OK <N>"
+        │  (o "ERR <mensaje>" si fallo algo)
         │
         ▼
-VendiaSender recibe ACK
+VendiaSender ve aparecer el .ack y lo lee
         │
         ▼
-Marca las ventas como estado = 'E' en ventas.dat
+Si .ack = "OK ..." → marca las ventas como estado = 'E' en ventas.dat
+Si .ack = "ERR ..." → registra el error, no marca nada
 ```
 
 ---
@@ -129,23 +139,59 @@ permitiendo búsquedas en O(log N) sin recorrer el archivo de datos.
 
 ---
 
-## Protocolo TCP
+## Protocolo de carpeta compartida
 
-El protocolo es binario, compatible con `DataOutputStream` / `DataInputStream` de Java:
+La comunicación es por archivos depositados en la carpeta `DATOS\`, que actúa
+como un buzón bidireccional entre Sender y Updater. Cada envío produce un par
+de archivos relacionados por el mismo nombre base con distintas extensiones.
+
+### Nombres de archivo
+
+| Extensión | Origen | Destino | Contenido |
+|-----------|--------|---------|-----------|
+| `ventas_<timestamp>.dat` | VendiaSender | VendiaUpdater | Registros binarios de las ventas |
+| `ventas_<timestamp>.ack` | VendiaUpdater | VendiaSender | Texto de confirmación o error |
+
+El `<timestamp>` tiene formato `yyyyMMdd_HHmmss` y garantiza que distintos
+envíos no se pisen aunque caigan en la misma carpeta.
+
+### Formato del `.dat`
+
+Concatenación de N registros de 130 bytes, **mismo formato** que `ventas.dat`
+local del cliente (ver sección "Estructura de archivos binarios"). No hay
+cabecera con la cantidad: el Updater calcula `N = length / 130`.
+
+### Formato del `.ack`
+
+Archivo de texto plano con una sola línea:
+
+| Resultado | Formato | Significado |
+|-----------|---------|-------------|
+| Éxito  | `OK <N>`        | Las N ventas fueron insertadas en MySQL |
+| Error  | `ERR <mensaje>` | Algo falló al procesar; el sender no marca como enviadas |
+
+### Secuencia
 
 ```
-Cliente (VendiaSender)          Servidor (VendiaUpdater)
-─────────────────────           ────────────────────────
-writeInt(N)              →      readInt()
-writeChars(idVenta)      →      readChar() × 20
-writeChars(idVendedor)   →      readChar() × 20
-writeChars(fecha)        →      readChar() × 20
-writeDouble(monto)       →      readDouble()
-writeChar(estado)        →      readChar()
- ... (repite N veces)
-flush()                  →
-                         ←      writeUTF("ACK")
+VendiaSender                   Carpeta DATOS\                  VendiaUpdater
+────────────                   ──────────────                  ─────────────
+write ventas_<ts>.dat   →      ventas_<ts>.dat
+                                                               (polling cada 2 s)
+                                                               detecta .dat sin .ack
+                                                               lee N = length/130
+                                                               INSERT batch en MySQL
+                                              ventas_<ts>.ack  ← write "OK <N>"
+polling cada 500 ms     ←      ventas_<ts>.ack
+lee el .ack
+marca ventas como 'E'
 ```
+
+### Idempotencia
+
+Si el Updater se reinicia, al volver a vigilar la carpeta encuentra los `.dat`
+viejos pero también encuentra sus `.ack`, así que los ignora — no reprocesa.
+Si el Sender se reenvía por error, el `INSERT IGNORE` de MySQL evita duplicados
+porque `id_venta` es clave primaria.
 
 ---
 
@@ -194,21 +240,24 @@ se crean automáticamente en la carpeta raíz del proyecto.
    CREATE DATABASE logimarket;
    ```
 
-2. Editar `VendiaUpdater/updater.properties`:
+2. Crear la carpeta compartida (ej: `C:\Users\USER\Desktop\DATOS`).
+
+3. Editar `VendiaUpdater/updater.properties`:
    ```properties
-   puerto=9090
+   carpeta.datos=C:\\Users\\USER\\Desktop\\DATOS
+   intervalo.polling.ms=2000
    db.url=jdbc:mysql://localhost:3306/logimarket
    db.usuario=root
    db.password=tu_password
    ```
 
-3. Ejecutar:
+4. Ejecutar:
    ```bash
    cd VendiaUpdater
    mvn compile exec:java
    ```
 
-El servidor queda escuchando. Presionar **ENTER** para detenerlo.
+El daemon queda vigilando la carpeta. Presionar **ENTER** para detenerlo.
 
 ---
 
@@ -222,7 +271,7 @@ mvn javafx:run
 
 En la interfaz:
 1. Seleccionar el archivo `ventas.dat` generado por VendiaApp
-2. Ingresar la IP y puerto del servidor donde corre VendiaUpdater
+2. Seleccionar la misma carpeta compartida `DATOS\` que vigila VendiaUpdater
 3. Hacer clic en **"Enviar al Servidor"**
 
 ---
@@ -235,4 +284,4 @@ En la interfaz:
 | VendiaSender  | Java 21, JavaFX 21, Maven     |
 | VendiaUpdater | Java 21, MySQL 8, Maven       |
 | Persistencia  | Archivos binarios + MySQL 8   |
-| Comunicación  | TCP sockets (DataStream)      |
+| Comunicación  | Archivos en carpeta compartida (DataStream binario + ACK de texto) |
