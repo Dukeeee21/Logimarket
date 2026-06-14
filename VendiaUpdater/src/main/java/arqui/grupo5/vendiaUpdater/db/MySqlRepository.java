@@ -31,39 +31,37 @@ public class MySqlRepository implements AutoCloseable {
     }
 
     public void insertarVenta(Venta v) throws SQLException {
-        String sql = """
-            INSERT IGNORE INTO ventas (id_venta, id_vendedor, fecha, monto_total, estado)
-            VALUES (?, ?, ?, ?, ?)
-            """;
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, v.getIdVenta());
-            ps.setString(2, v.getIdVendedor());
-            ps.setString(3, v.getFecha());
-            ps.setDouble(4, v.getMontoTotal());
-            ps.setString(5, String.valueOf(v.getEstado()));
-            ps.executeUpdate();
+        // Se delega la operación al DBMS mediante el Stored Procedure
+        String sql = "{CALL SP_RegistrarVenta(?, ?, ?, ?, ?)}";
+
+        try (CallableStatement cs = conn.prepareCall(sql)) {
+            cs.setString(1, v.getIdVenta());
+            cs.setString(2, v.getIdVendedor());
+            cs.setString(3, v.getFecha());
+            cs.setDouble(4, v.getMontoTotal());
+            cs.setString(5, String.valueOf(v.getEstado()));
+            cs.executeUpdate();
         }
     }
 
     public void insertarBatch(List<Venta> ventas) throws SQLException {
         if (ventas.isEmpty()) return;
 
-        String sql = """
-            INSERT IGNORE INTO ventas (id_venta, id_vendedor, fecha, monto_total, estado)
-            VALUES (?, ?, ?, ?, ?)
-            """;
+        // Se delega la operación por lotes al DBMS
+        String sql = "{CALL SP_RegistrarVenta(?, ?, ?, ?, ?)}";
+
         boolean autoCommitPrevio = conn.getAutoCommit();
         conn.setAutoCommit(false);
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+        try (CallableStatement cs = conn.prepareCall(sql)) {
             for (Venta v : ventas) {
-                ps.setString(1, v.getIdVenta());
-                ps.setString(2, v.getIdVendedor());
-                ps.setString(3, v.getFecha());
-                ps.setDouble(4, v.getMontoTotal());
-                ps.setString(5, String.valueOf(v.getEstado()));
-                ps.addBatch();
+                cs.setString(1, v.getIdVenta());
+                cs.setString(2, v.getIdVendedor());
+                cs.setString(3, v.getFecha());
+                cs.setDouble(4, v.getMontoTotal());
+                cs.setString(5, String.valueOf(v.getEstado()));
+                cs.addBatch();
             }
-            ps.executeBatch();
+            cs.executeBatch();
             conn.commit();
         } catch (SQLException e) {
             conn.rollback();
