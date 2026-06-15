@@ -4,9 +4,11 @@
   <component name="MavenProjectsManager">
     <option name="originalFiles">
       <list>
-        <option value="$PROJECT_DIR$/VendiaUpdater/pom.xml" />
         <option value="$PROJECT_DIR$/VendiaApp/pom.xml" />
         <option value="$PROJECT_DIR$/VendiaSender/pom.xml" />
+        <option value="$PROJECT_DIR$/VendiaUpdater/pom.xml" />
+        <option value="$PROJECT_DIR$/GenerarDatawareHouse/pom.xml" />
+        <option value="$PROJECT_DIR$/VendiaWeb/pom.xml" />
       </list>
     </option>
   </component>
