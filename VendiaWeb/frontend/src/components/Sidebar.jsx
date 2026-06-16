@@ -1,7 +1,6 @@
 const ITEMS = [
   { id: 'ventas', label: 'Gestion de Ventas' },
   { id: 'mirror', label: 'Capa Mirror'        },
-  { id: 'arch',   label: 'Arquitectura'       },
 ]
 
 export function Sidebar({ page, setPage }) {

@@ -8,8 +8,8 @@ análisis OLAP. Implementa el patrón **MVC** en todas sus capas:
 | MVC | Componente |
 |-----|-----------|
 | Modelo | Base de datos MySQL + repositorios JDBC |
-| Vista | HTML + CSS + React (VendiaWeb) / JavaFX (VendiaApp) |
-| Controlador | Spring Boot REST API (VendiaWeb) / controladores Java (VendiaApp) |
+| Vista | React + Vite (VendiaWeb) / JavaFX (apps de escritorio) |
+| Controlador | Spring Boot REST API (VendiaWeb) / controladores Java (apps) |
 
 ---
 
@@ -22,6 +22,8 @@ análisis OLAP. Implementa el patrón **MVC** en todas sus capas:
 | `VendiaUpdater` | Datos | Daemon que detecta archivos `.dat` e inserta en MySQL |
 | `VendiaWeb` | Aplicación Web | Servidor web Spring Boot con API REST y frontend React |
 | `GenerarDatawareHouse` | DataWarehouse | App JavaFX que realiza el ETL hacia el servidor DW |
+| `CreateCrossTab` | OLAP | App JavaFX que genera el cubo OLAP (tabla cruzada por trimestre) |
+| `ViewCrossTab` | OLAP | App JavaFX para visualizar el cubo OLAP con gráficos y tabla pivot |
 
 ---
 
@@ -33,7 +35,23 @@ análisis OLAP. Implementa el patrón **MVC** en todas sus capas:
 3. VendiaApp            →  cajero usa durante todo el turno
 4. VendiaSender         →  cajero usa al cerrar el turno
 5. GenerarDatawareHouse →  administrador ejecuta para actualizar el DW
+6. CreateCrossTab       →  administrador genera el cubo OLAP
+7. ViewCrossTab         →  administrador visualiza análisis gerencial
 ```
+
+---
+
+## Bases de datos requeridas
+
+Antes de ejecutar cualquier módulo, crear las tres bases de datos en MySQL:
+
+```sql
+CREATE DATABASE logimarket;
+CREATE DATABASE logimarket_mirror;
+CREATE DATABASE logimarket_dw;
+```
+
+> Las tablas se crean **automáticamente** la primera vez que se ejecuta cada módulo.
 
 ---
 
@@ -42,11 +60,7 @@ análisis OLAP. Implementa el patrón **MVC** en todas sus capas:
 Debe estar corriendo **antes** de que cualquier sede intente enviar ventas.
 
 **Requisitos previos:**
-
-1. Crear la base de datos en MySQL (una sola vez):
-   ```sql
-   CREATE DATABASE logimarket;
-   ```
+1. La base de datos `logimarket` debe existir (ver arriba).
 2. Crear la carpeta compartida, por ejemplo `C:\Users\ADMIN\Desktop\DATOS`.
 
 **Configurar** `VendiaUpdater/updater.properties`:
@@ -201,6 +215,100 @@ crean automáticamente si no existen.
 
 ---
 
+## 6. CreateCrossTab — Generar cubo OLAP
+
+Genera la tabla cruzada (pivot) de ventas por vendedor y trimestre a partir del DataWarehouse.
+
+**Ejecutar (desarrollo):**
+```bash
+cd CreateCrossTab
+mvn javafx:run
+```
+
+**Ejecutar (producción):**
+```
+CreateCrossTab\target\dist\CreateCrossTab\CreateCrossTab.exe
+```
+
+**Generar el .exe:**
+```bash
+cd CreateCrossTab
+mvn package
+# El ejecutable queda en: target/dist/CreateCrossTab/CreateCrossTab.exe
+```
+
+**Configurar** `CreateCrossTab/crosstab.properties` (opcional, precarga los campos):
+```properties
+dw.url=jdbc:mysql://localhost:3306/logimarket_dw
+dw.usuario=root
+dw.password=tu_password
+```
+
+**Pasos dentro de la app:**
+1. Verificar o completar la URL del DW, usuario y contraseña
+2. Seleccionar el **año** a procesar
+3. Presionar **"Generar CrossTab"**
+4. La tabla `crosstab_ventas` se crea automáticamente en `logimarket_dw`
+5. Opcionalmente presionar **"Exportar CSV"** para guardar los resultados
+
+**Tabla generada (`crosstab_ventas`):**
+
+| id_vendedor | anio | q1_monto | q2_monto | q3_monto | q4_monto | total_anual | q1_cantidad | ... |
+|-------------|------|----------|----------|----------|----------|-------------|-------------|-----|
+| V001 | 2026 | 1500.00 | 2300.00 | 890.00 | 3100.00 | 7790.00 | 12 | ... |
+
+> Ejecutarlo varias veces es seguro: usa UPSERT (no duplica registros).
+
+---
+
+## 7. ViewCrossTab — Visualizar cubo OLAP
+
+Visualiza los datos generados por CreateCrossTab con tabla pivot y gráficos.
+
+**Requisito previo:** haber ejecutado **CreateCrossTab** al menos una vez para el año que se quiere ver.
+
+**Ejecutar (desarrollo):**
+```bash
+cd ViewCrossTab
+mvn javafx:run
+```
+
+**Ejecutar (producción):**
+```
+ViewCrossTab\target\dist\ViewCrossTab\ViewCrossTab.exe
+```
+
+**Generar el .exe:**
+```bash
+cd ViewCrossTab
+mvn package
+# El ejecutable queda en: target/dist/ViewCrossTab/ViewCrossTab.exe
+```
+
+**Configurar** `ViewCrossTab/crosstab.properties` (opcional, precarga los campos):
+```properties
+dw.url=jdbc:mysql://localhost:3306/logimarket_dw
+dw.usuario=root
+dw.password=tu_password
+```
+
+**Pasos dentro de la app:**
+1. Verificar o completar la URL del DW, usuario y contraseña
+2. Seleccionar el **año**
+3. Presionar **"Cargar CrossTab"**
+
+**Las 3 pestañas disponibles:**
+
+| Pestaña | Contenido |
+|---------|-----------|
+| Tabla Cruzada (Pivot) | Grilla vendedor × Q1/Q2/Q3/Q4 con montos en S/. y cantidad de transacciones |
+| Gráfico de Barras | Barras agrupadas por vendedor, una barra por trimestre |
+| Distribución por Trimestre | Gráfico de torta con porcentaje y monto total por Q |
+
+> Los `.exe` son portátiles pero **requieren** la carpeta `runtime/` y `app/` que están junto al ejecutable. Para distribuirlos, copiar toda la carpeta `CreateCrossTab/` o `ViewCrossTab/`, no solo el `.exe`.
+
+---
+
 ## Despliegue en Servidor de Aplicaciones
 
 Los ejecutables deben copiarse a una carpeta compartida, por ejemplo:
@@ -209,7 +317,9 @@ C:\ServidorApps\Vendia\
 ├── VendiaApp\
 ├── VendiaSender\
 ├── VendiaWeb\
-└── GenerarDatawareHouse\
+├── GenerarDatawareHouse\
+├── CreateCrossTab\
+└── ViewCrossTab\
 ```
 
 Cada PC cliente crea **accesos directos** que apuntan a esa ruta de red.
@@ -242,7 +352,33 @@ Vendia_V2/
 ├── VendiaUpdater/          # Daemon servidor de BD
 ├── VendiaWeb/              # Servidor web Spring Boot + React
 │   └── frontend/           # Proyecto React (Vite)
-└── GenerarDatawareHouse/   # ETL hacia DataWarehouse
+├── GenerarDatawareHouse/   # ETL hacia DataWarehouse
+├── CreateCrossTab/         # Generador de cubo OLAP (pivot trimestral)
+└── ViewCrossTab/           # Visualizador de cubo OLAP (tabla + gráficos)
+```
+
+---
+
+## Flujo completo del sistema
+
+```
+[PC Cajero]                [Servidor]                    [Análisis]
+VendiaApp         →    VendiaUpdater   →   logimarket (MySQL)
+(ventas.dat local)     (daemon, FTP)           ↓
+                                           VendiaWeb (REST API)
+VendiaSender      →    carpeta DATOS          ↓
+(envío .dat)           (shared folder)    Mirror: logimarket_mirror
+                                               ↓
+                                       GenerarDatawareHouse (ETL)
+                                               ↓
+                                       logimarket_dw
+                                       (dim_vendedor, dim_fecha, fact_ventas)
+                                               ↓
+                                         CreateCrossTab
+                                       (genera crosstab_ventas)
+                                               ↓
+                                          ViewCrossTab
+                                     (tabla pivot + gráficos OLAP)
 ```
 
 ---

@@ -51,6 +51,8 @@ public class VentaController {
     public ResponseEntity<Map<String, String>> registrar(@RequestBody Map<String, Object> body) {
         try {
             String idVendedor = (String) body.get("idVendedor");
+            String idProducto = body.get("idProducto") != null
+                                ? (String) body.get("idProducto") : "P001";
             double monto      = ((Number) body.get("monto")).doubleValue();
 
             if (idVendedor == null || idVendedor.isBlank())
@@ -61,7 +63,8 @@ public class VentaController {
             String idVenta = "VTA-" + LocalDateTime.now().format(ID_FMT);
             String fecha   = LocalDateTime.now().format(FECHA_FMT);
 
-            repo.insertar(new Venta(idVenta, idVendedor.trim().toUpperCase(), fecha, monto, "P"));
+            repo.insertar(new Venta(idVenta, idVendedor.trim().toUpperCase(),
+                                    idProducto.trim().toUpperCase(), fecha, monto, "P"));
 
             return ResponseEntity.ok(Map.of(
                 "mensaje", "Venta registrada exitosamente.",
